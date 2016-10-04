@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+
+"""
+movie.geourdu.com Test Service Code
+
+video host server is too slow for use with Plex
+"""
+
+from urllib import quote
+
+####################################################################################################
+def NormalizeURL(url):
+    return url
+
+####################################################################################################
+def MetadataObjectForURL(url):
+
+    try:
+        html = HTML.ElementFromURL(url)
+    except:
+        raise Ex.MediaNotAvailable
+
+    # Setup title. If no title then no video source.
+    title = html.xpath('//h2/text()')
+    if not title:
+        raise Ex.MediaExpired
+    title = Regex(r'(.+?)\s\(\d+\)$').sub(r'\1', title[0].strip())
+
+    # setup thumb
+    fallback = 'http://i.imgur.com/75YO83o.jpg'
+    thumb = html.xpath('//meta[@property="og:image"]/@content')
+    thumb = thumb[0] if thumb else fallback
+
+    # setup summary
+    p = html.xpath('//div[@class="post-entry"]/div/following-sibling::p')
+    s1 = p[0].text_content() if p else ''
+    s2 = (p[1].text_content() if 'Cast:' not in p[1].text_content() else '') if len(p) > 1 else ''
+    summary = (s1 + '\n\r' + s2).strip() if (s1 and s2) else (s1.strip() if s1 else None)
+
+    # setup Originally available at and Year
+    up_date = html.xpath('//meta[@property="article:published_time"]/@content')
+    y = html.xpath('//p[@class="wp-caption-text"]/text()')
+    ry = Regex(r'\((\d+)\)$').search(y[0]) if y else None
+    year = int(ry.group(1)) if ry else None
+
+    return MovieObject(
+        title=title.strip(),
+        summary=summary,
+        year=year,
+        originally_available_at=Datetime.ParseDate(up_date[0]) if up_date else None,
+        thumb=Resource.ContentsOfURLWithFallback([thumb, fallback]),
+        source_title='GeoUrdu'
+        )
+
+####################################################################################################
+def MediaObjectsForURL(url):
+
+    return [
+        MediaObject(
+            container=Container.MP4,
+            video_codec=VideoCodec.H264,
+            audio_codec=AudioCodec.AAC,
+            audio_channels=2,
+            optimized_for_streaming=True,
+            parts=[
+                PartObject(key=Callback(PlayVideo, url=url))
+                ]
+            )
+        ]
+
+####################################################################################################
+@indirect
+def PlayVideo(url, **kwargs):
+
+    try:
+        page = HTTP.Request(url).content
+    except:
+        raise Ex.MediaNotAvailable
+
+    r = Regex(r'[\"\']?file[\"\']?\s*?\:\s*?[\"\'](http[^\"\'\?]+(?<!m3u8|smil))[\"\']').search(page)
+    if r:
+        vurl = quote(r.group(1), ':/')
+        Log.Debug('* PlayVideo ULR = %s' %vurl)
+        return IndirectResponse(VideoClipObject, key=vurl)
+
+    raise Ex.MediaNotAvailable

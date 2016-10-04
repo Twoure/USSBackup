@@ -1,0 +1,83 @@
+#!/usr/bin/env python
+
+"""www.Wootly.ch Service Code"""
+
+import urllib2
+import contextlib
+
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'
+
+####################################################################################################
+def MetadataObjectForURL(url):
+
+    try:
+        html = HTML.ElementFromURL(url)
+    except:
+        raise Ex.MediaNotAvailable
+
+    title = html.xpath('//title/text()')
+    if not title:
+        raise Ex.MediaExpired
+
+    return VideoClipObject(
+        title=title[0].strip(),
+        thumb='http://i.imgur.com/75YO83o.jpg',
+        source_title='Wootly'
+        )
+
+####################################################################################################
+def MediaObjectsForURL(url):
+
+    return [
+        MediaObject(
+            video_resolution='sd',
+            audio_channels=2,
+            optimized_for_streaming=False,
+            parts=[
+                PartObject(key=Callback(PlayVideo, url=url))
+                ]
+            )
+        ]
+
+####################################################################################################
+@indirect
+def PlayVideo(url, **kwargs):
+
+    http_headers = dict()
+    http_headers['User-Agent'] = USER_AGENT
+
+    try:
+        html = HTML.ElementFromURL(url, headers=http_headers)
+    except:
+        raise Ex.MediaNotAvailable
+
+    values = dict()
+    for item in html.xpath('//input'):
+        if (item.get('id') == 'a') or (not item.get('disabled') and item.get('id') != 'b'):
+            values.update({item.get('name'): item.get('value')})
+
+    #Log(values)
+    cookies1 = HTTP.CookiesForURL(url)
+    #Log(cookies1)
+    http_headers.update({'Cookie': cookies1, 'Referer': url})
+    #Log(http_headers)
+
+    page = HTTP.Request(url, headers=http_headers, values=values).content
+    cookies2 = HTTP.CookiesForURL(url)
+    #rc = Regex(r'(?i)(zuid=[a-z0-9]+)').search(cookies2)
+    #cookies2 = rc.group(1) if rc else cookies2
+    #Log(cookies2)
+    #Log(page)
+    html2 = HTML.ElementFromString(page)
+
+    HTTP.ClearCookies()
+    del http_headers['Cookie']
+
+    vurl = html2.xpath('//video/@src')
+    if vurl:
+        Log.Debug('* PlayVideo URL = \"%s\"' %vurl[0])
+        Log.Debug('* PlayVideo Headers = %s' %http_headers)
+        Log.Debug('* PlayVideo Cookies = %s' %cookies2)
+        return IndirectResponse(VideoClipObject, key=vurl[0], http_headers=http_headers, http_cookies=cookies2)
+
+    raise Ex.MediaNotAvailable

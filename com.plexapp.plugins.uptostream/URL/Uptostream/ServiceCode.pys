@@ -1,0 +1,87 @@
+#!/usr/bin/env python
+
+"""
+Uptostream.com | Uptobox.com Service Code
+
+Host imposes a 120 min limit per day of viewing... so no good for Plex
+"""
+
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'
+
+####################################################################################################
+def NormalizeURL(url):
+
+    r = Regex(r'(?i)(https?\:\/\/(?:www\.)?\w+\.\w+)(?:\/iframe)?\/([a-z0-9]+)').search(url)
+    if r:
+        url = r.group(1) + '/' + r.group(2)
+    return url.replace('uptobox', 'uptostream')
+
+####################################################################################################
+def MetadataObjectForURL(url):
+
+    try:
+        html = HTML.ElementFromURL(url)
+    except:
+        raise Ex.MediaNotAvailable
+
+    title = html.xpath('//div[@id="titleVid"]/text()')
+    if not title:
+        raise Ex.MediaNotAvailable
+    elif 'File not found' in title[0]:
+        raise Ex.MediaExpired
+
+    fallback = 'http://i.imgur.com/75YO83o.jpg'
+    th = html.xpath('//video/@poster')
+    thumb = ('http:' + th[0] if th[0].startswith('//') else th[0]) if th else fallback
+
+    return VideoClipObject(
+        title=title[0].strip(),
+        thumb=Resource.ContentsOfURLWithFallback([thumb, fallback]),
+        source_title='Uptostream'
+        )
+
+####################################################################################################
+def MediaObjectsForURL(url):
+
+    return [
+        MediaObject(
+            bitrate=bit,
+            video_resolution=res,
+            audio_channels=2,
+            optimized_for_streaming=False,
+            parts=[
+                PartObject(key=Callback(PlayVideo, url=url, res=res))
+                ]
+            ) for bit, res in [(1957, '720'), (833, '480'), (508, '360')]
+        ]
+
+####################################################################################################
+@indirect
+def PlayVideo(url, res, **kwargs):
+
+    http_headers = {'User-Agent': USER_AGENT}
+    try:
+        html = HTML.ElementFromURL(url, headers=http_headers)
+    except:
+        raise Ex.MediaNotAvailable
+
+    urls = list()
+    for item in html.xpath('//video/source'):
+        cres = int(item.get('data-res')[:-1])
+        u = item.get('src')
+        u = 'http:' + u if u.startswith('//') else u
+        urls.append((cres, u))
+
+    if urls:
+        for f, vu in sorted(urls):
+            vurl = vu
+            Log(vurl)
+            if int(res) == f:
+                break
+            elif f > int(res):
+                break
+
+        Log.Debug('* PlayVideo ULR = %s' %vurl)
+        return IndirectResponse(VideoClipObject, key=vurl, http_headers=http_headers)
+
+    raise Ex.MediaNotAvailable

@@ -1,0 +1,166 @@
+#!/usr/bin/env python
+
+"""
+Service Code for:
+    DaClips, FileHoot, GorillaVid, MovPod, PowerWatch,
+    Rapidvideo.ws | FastStream.in, Streame.net, Streamin, StreamPlay,
+    TheVideoBee, VideoNest, Vidtodo, VidPlay, ZStream
+
+Decided to sepearte out Vidto, because it host multiple resolutions
+"""
+
+from unpacker import unpack as Unpack
+import urllib2
+import contextlib
+
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'
+
+####################################################################################################
+def NormalizeURL(url):
+
+    r = get_embed_url(url, norm=True)
+    return r.group(1) + r.group(2).split('-')[0]
+
+####################################################################################################
+def MetadataObjectForURL(url):
+
+    try:
+        url = correct_url(url)
+        page = HTTP.Request(url).content
+        html = HTML.ElementFromString(page)
+    except Exception as e:
+        Log(str(e))
+        raise Ex.MediaNotAvailable
+
+    if html.xpath('//title/text()')[0] == '404 - Not Found':
+        raise Ex.MediaExpired
+
+    vid = Regex(r'https?\:\/\/(?:www\.)?\w+\.(?:[^/]+\/)?(?:.*?[/])?([^\/\.]+)').search(url).group(1)
+    title = Regex(r'%s\](.+?)\-\s\d+(?:\.\d+)?\sMB' %vid).search(page)
+    if title:
+        title = title.group(1).strip()
+    else:
+        title = html.xpath('//input[@name="fname"]/@value')
+        if title:
+            title = title[0].strip()
+        else:
+            raise Ex.MediaExpired
+
+    eurl = get_embed_url(url)
+    http_headers = {'User-Agent': USER_AGENT}
+
+    tpage = HTTP.Request(eurl, headers=http_headers).content
+    packed = get_packed_data(tpage)
+    if packed:
+        tpage = Unpack(packed.group(1))
+
+    vurl = get_video_url(eurl, tpage)
+    if not vurl:
+        raise Ex.MediaNotAvailable
+    elif not check_url(vurl):
+        raise Ex.MediaExpired
+
+    rt = Regex(r'[\"\']?image[\"\']?\s*?\:\s*?[\"\']([^\"\']+)[\"\']').search(tpage)
+    rd = Regex(r'[\"\']?duration[\"\']?\s*?\:\s*?[\"\'](\d+)[\"\']').search(tpage)
+    st = Regex(r'https?\:\/\/(?:www\.)?(\w+)\.\w+').search(url)
+
+    fallback = 'http://i.imgur.com/75YO83o.jpg'
+    thumb = rt.group(1) if rt else fallback
+    duration = int(rd.group(1)) * 1000 if rd else None
+
+    return VideoClipObject(
+        title=title,
+        thumb=Resource.ContentsOfURLWithFallback([thumb, fallback]),
+        duration=duration,
+        source_title=st.group(1).title() if st else 'XFileShare'
+        )
+
+####################################################################################################
+def MediaObjectsForURL(url):
+
+    if Regex(r'(?:\.|\/)(daclips|gorillavid|movpod)\.').search(url):
+        return [
+            MediaObject(
+                container=Container.FLV if 'movpod' in url else Container.MP4,
+                video_codec=VideoCodec.H264,
+                audio_codec=AudioCodec.AAC,
+                audio_channels=2,
+                optimized_for_streaming=True,
+                parts=[
+                    PartObject(key=Callback(PlayVideo, url=url))
+                    ]
+                )
+            ]
+    else:
+        return [
+            MediaObject(
+                audio_channels=2,
+                optimized_for_streaming=False,
+                parts=[
+                    PartObject(key=Callback(PlayVideo, url=url))
+                    ]
+                )
+            ]
+
+####################################################################################################
+@indirect
+def PlayVideo(url, **kwargs):
+
+    url = get_embed_url(correct_url(url))
+    http_headers = {'User-Agent': USER_AGENT}
+
+    page = HTTP.Request(url, headers=http_headers).content
+    packed = get_packed_data(page)
+    if packed:
+        page = Unpack(packed.group(1))
+
+    vurl = get_video_url(url, page)
+    if vurl:
+        Log.Debug('* PlayVideo URL = \"%s\"' %vurl)
+        return IndirectResponse(VideoClipObject, key=vurl, http_headers=http_headers)
+
+    raise Ex.MediaNotAvailable
+
+####################################################################################################
+def get_packed_data(page):
+    return Regex(r"<script type=.text\/javascript.>(eval\(function\(p,a,c,k,e,.+(?:file).+\.split\('\|'\)\)\))").search(page)
+
+####################################################################################################
+def get_embed_url(url, norm=False):
+    r = Regex(r'(?i)(.*?https?:\/\/(?:www\.)?\w+\.\w+\/)(?:embed\-|\w+\/)?([a-z0-9]+)').search(url)
+    return r if norm else r.group(1) + 'embed-' + r.group(2) + '.html'
+
+####################################################################################################
+def correct_url(url):
+    url_list = ['vodlocker', 'gorillavid', 'faststream']
+    test = [url[4:] for u in url_list if Regex(r'(?:\.|\/)(%s)\.' %u).search(url)]
+    return test[0] if test else url
+
+####################################################################################################
+def get_video_url(url, page):
+    vurl = None
+    ru = Regex(r'[\"\']?file[\"\']?\s*?\:\s*?[\"\'](http[^\"\']+(?<!m3u8|smil))[\"\']').search(page)
+    if ru:
+        vurl = ru.group(1) + '&direct=false&ua=true' if 'allmyvideos' in url else ru.group(1)
+    return vurl
+
+####################################################################################################
+def check_url(url, ref_url=None, geturl=False):
+    Log('* Checking Response for %s' %url)
+    http_headers = dict()
+    http_headers['User-Agent'] = USER_AGENT
+    if ref_url:
+        http_headers.update({'Referer': ref_url})
+
+    try:
+        req = urllib2.Request(url, headers=http_headers)
+        req.get_method = lambda : 'HEAD'
+        try:
+            with contextlib.closing(urllib2.urlopen(req)) as resp:
+                Log('* URL Passed with no Errors')
+                return resp.geturl() if geturl else True
+        except urllib2.HTTPError, e:
+            Log.Error('* check_url: %s' %str(e))
+    except Exception as er:
+        Log.Critical('* check_url: %s' %str(er))
+    return False
