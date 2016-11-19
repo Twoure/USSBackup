@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+
+"""
+VeeHD.com Service Code
+    - channel has some issues with audio codec and divx, YMMV
+    - host mix of flv, mp4, and divx content
+"""
+
+RE_BASE_URL = Regex(r'(^https?://(?:www\.)?veehd\.\w+)')
+RE_VPI = Regex(r'(/vpi\?[^"\']+)')
+RE_DUR = Regex(r'(?i)duration *?\: *?([\d\:]+)')
+RE_RES = Regex(r'(?i)resolution *?\: *?([\dx]+)')
+RE_BIT = Regex(r'(?i)bitrate *?\: *?(\d+)')
+RE_TYPE = Regex(r'(?i)type *?\: *?(flash|divx)')
+FALLBACK = 'http://i.imgur.com/75YO83o.jpg'
+
+####################################################################################################
+def NormalizeURL(url):
+
+    return url.split('?')[0]
+
+####################################################################################################
+def MetadataObjectForURL(url):
+
+    page = get_page(url)
+    html = HTML.ElementFromString(page)
+
+    title = html.xpath('//meta[@property="og:title"]/@content')
+    if not title:
+        raise Ex.MediaNotAvailable
+
+    thumb = html.xpath('//meta[@property="og:image"]/@content')
+    thumb = thumb[0] if thumb else FALLBACK
+
+    data = get_data(page)
+    if not 'vpi' in data.keys():
+        raise Ex.MediaExpired
+
+    summary = html.xpath('//td[@class="infodropdown"]//div')
+
+    return VideoClipObject(
+        title=title[0].strip(),
+        duration=Datetime.MillisecondsFromString(data['duration']) if 'duration' in data.keys() else None,
+        summary=summary[0].text_content().strip().split('\n')[0] if summary else None,
+        thumb=Resource.ContentsOfURLWithFallback([thumb, FALLBACK]),
+        source_title='VeeHD'
+        )
+
+####################################################################################################
+def MediaObjectsForURL(url):
+
+    data = get_data(get_page(url))
+    if ('res' in data.keys()) and ('bitrate' in data.keys()) and ('type' in data.keys()):
+        if data['type'].lower() == 'flash':
+            return [
+                MediaObject(
+                    container=Container.MP4,
+                    audio_codec=AudioCodec.AAC,
+                    video_codec=VideoCodec.H264,
+                    bitrate=int(data['bitrate']),
+                    video_resolution=data['res'],
+                    audio_channels=2,
+                    optimized_for_streaming=True,
+                    parts=[
+                        PartObject(key=Callback(PlayVideo, url=url))
+                        ]
+                    )
+                ]
+        else:
+            return [
+                MediaObject(
+                    #container=Container.AVI,
+                    #video_codec=VideoCodec.DIVX,
+                    bitrate=int(data['bitrate']),
+                    video_resolution=data['res'],
+                    audio_channels=2,
+                    optimized_for_streaming=False,
+                    parts=[
+                        PartObject(key=Callback(PlayVideo, url=url))
+                        ]
+                    )
+                ]
+
+    raise Ex.MediaNotAvailable
+
+####################################################################################################
+@indirect
+def PlayVideo(url, **kwargs):
+
+    rvpi = RE_VPI.search(get_page(url))
+    if not rvpi:
+        raise Ex.MediaNotAvailable
+
+    base_url = RE_BASE_URL.search(url)
+    html = HTML.ElementFromString(get_page(base_url.group(1) + rvpi.group(1)))
+
+    embed = html.xpath('//embed[@type="video/divx"]/@src')
+    flashvars = html.xpath('//param[@name="flashvars"]/@value')
+
+    if embed:
+        Log.Debug(u'* PlayVideo DIVX URL = {0}'.format(embed[0]))
+        return IndirectResponse(VideoClipObject, key=embed[0])
+    elif flashvars:
+        j = flashvars[0].split('config=')[-1]
+        j_obj = JSON.ObjectFromString(j)
+        vurl = String.Unquote(j_obj['clip']['url'])
+        Log.Debug(u'* PlayVideo Flash URL = {0}'.format(vurl))
+        return IndirectResponse(VideoClipObject, key=vurl)
+
+    raise Ex.MediaNotAvailable
+
+####################################################################################################
+def get_page(url):
+    try:
+        page = HTTP.Request(url, cacheTime=10).content
+    except:
+        Log.Exception(u"* Error: Cannot open '{0}' >>>".format(url))
+        raise Ex.MediaNotAvailable
+    return page
+
+####################################################################################################
+def get_data(page):
+    info = dict()
+
+    rvpi = RE_VPI.search(page)
+    if rvpi:
+        info['vpi'] = rvpi.group(1)
+
+    rd = RE_DUR.search(page)
+    if rd:
+        info['duration'] = rd.group(1)
+
+    rres = RE_RES.search(page)
+    if rres:
+        info['res'] = rres.group(1).split('x')[-1]
+
+    rbit = RE_BIT.search(page)
+    if rbit:
+        info['bitrate'] = rbit.group(1)
+
+    rtype = RE_TYPE.search(page)
+    if rtype:
+        info['type'] = rtype.group(1)
+
+    return info
